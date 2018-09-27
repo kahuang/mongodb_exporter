@@ -1,6 +1,8 @@
 package collector
 
 import (
+	"strings"
+
 	"github.com/globalsign/mgo"
 	"github.com/globalsign/mgo/bson"
 
@@ -9,30 +11,36 @@ import (
 )
 
 var (
-	cursorTimeoutMillis = prometheus.NewGauge(prometheus.GaugeOpts{
-		Namespace: Namespace,
-		Subsystem: "parameters",
-		Name:      "cursor_timeout_millis",
-		Help:      "An integer that represents the cursorTimoutMillis option in mongod",
-	})
-	metric_mapping = map[string]prometheus.Gauge{
-		"cursorTimeoutMillis": cursorTimeoutMillis,
-	}
+	metric_mapping = map[string]prometheus.Gauge{}
 )
 
 type ParameterMetrics struct {
 }
 
 func (p *ParameterMetrics) Export(ch chan<- prometheus.Metric) {
-	cursorTimeoutMillis.Collect(ch)
+	for _, metric := range metric_mapping {
+		metric.Collect(ch)
+	}
 }
 
 func (p *ParameterMetrics) Describe(ch chan<- *prometheus.Desc) {
-	cursorTimeoutMillis.Describe(ch)
+	for _, metric := range metric_mapping {
+		metric.Describe(ch)
+	}
 }
 
-func GetParameters(session *mgo.Session) *ParameterMetrics {
-	for parameter, metric := range metric_mapping {
+func GetParameters(session *mgo.Session, parameters string) *ParameterMetrics {
+	split_parameters := strings.Split(parameters, ",")
+	for _, parameter := range split_parameters {
+		if _, ok := metric_mapping[parameter]; !ok {
+			metric_mapping[parameter] = prometheus.NewGauge(prometheus.GaugeOpts{
+				Namespace: Namespace,
+				Subsystem: "parameters",
+				Name:      parameter,
+				Help:      "A setParamter option in mongod",
+			})
+		}
+		metric := metric_mapping[parameter]
 		result := make(map[string]interface{})
 		err := session.DB("admin").Run(bson.D{{"getParameter", 1}, {parameter, 1}}, result)
 		if err != nil {
@@ -40,7 +48,18 @@ func GetParameters(session *mgo.Session) *ParameterMetrics {
 			continue
 		}
 		if val, ok := result[parameter]; ok {
-			metric.Set(float64(val.(int)))
+			switch valTyped := val.(type) {
+			case int:
+				metric.Set(float64(valTyped))
+			case float64:
+				metric.Set(valTyped)
+			case bool:
+				var bit int8
+				if valTyped {
+					bit = 1
+				}
+				metric.Set(float64(bit))
+			}
 		} else {
 			glog.Error("Unexpected response from getParameter command: %v", result)
 		}
